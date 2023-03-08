@@ -5,11 +5,11 @@ int int_value;
 float float_value;
 bool bool_value = true;
 
-// MAC Address of responder
+/*接收端板子的Mac地址，这里为两块板子*/
 uint8_t broadcastAddress[] = { 0xF4, 0x12, 0xFA, 0x57, 0x38, 0xC4 };
 uint8_t broadcastAddress2[] = { 0xF4, 0x12, 0xFA, 0x56, 0x32, 0x08 };
 
-// Define a data structure
+//用于测试的数据
 typedef struct struct_message {
   char a[32];
   int b;
@@ -19,11 +19,9 @@ typedef struct struct_message {
 
 struct_message myData;
 
-// Peer info
 esp_now_peer_info_t peerInfo;
-esp_now_peer_info_t peerInfo2;
 
-// Callback function called when data is sent
+// 回调函数接收数据
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   Serial.print("\r\nLast Packet Send Status:\t");
   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
@@ -31,68 +29,58 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 
 void setup() {
   Serial.begin(115200);
-  // Set ESP32 as a Wi-Fi Station
   WiFi.mode(WIFI_STA);
+  // 打印 Mac 地址
   Serial.print("ESP32 Board MAC Address:  ");
   Serial.println(WiFi.macAddress());
-  // Initilize ESP-NOW
+  // 初始化 ESP-NOW
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW");
     return;
   }
 
-  // Register the send callback
+  // 注册发送回调函数
   esp_now_register_send_cb(OnDataSent);
 
-  // Register peer
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  // 注册通信频道
+
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
 
-  memcpy(peerInfo2.peer_addr, broadcastAddress2, 6);
-  peerInfo2.channel = 0;
-  peerInfo2.encrypt = false;
-
-  // Add peer
+  // 配置接收板的Mac地址
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Failed to add peer");
+    return;   
+  }
+  memcpy(peerInfo.peer_addr, broadcastAddress2, 6);
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
     Serial.println("Failed to add peer");
     return;
   }
-  if (esp_now_add_peer(&peerInfo2) != ESP_OK) {
-    Serial.println("Failed to add peer2");
-    return;
-  }
-  neopixelWrite(48, RGB_BRIGHTNESS, 0, 0);
 }
 
 void loop() {
-
-  // Create test data
+  // 创建测试数据
   int_value = random(1, 20);
   float_value = 1.3 * int_value;
   bool_value = !bool_value;
-
-  // Format structured data
   strcpy(myData.a, "Welcome to the Workshop!");
   myData.b = int_value;
   myData.c = float_value;
   myData.d = bool_value;
 
-  // Send message via ESP-NOW
-  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *)&myData, sizeof(myData));
-  esp_err_t result2 = esp_now_send(broadcastAddress2, (uint8_t *)&myData, sizeof(myData));
+  // 向指定 MAC 地址发送数据
+  esp_err_t result = esp_now_send(0, (uint8_t *)&myData, sizeof(myData));
+  //esp_err_t result2 = esp_now_send(broadcastAddress2, (uint8_t *)&myData, sizeof(myData));
 
   if (result == ESP_OK) {
     Serial.println("Sending confirmed");
-  } else {
-    Serial.println("Sending error");
-  }
-
-  if (result2 == ESP_OK) {
-    Serial.println("Sending confirmed");
+    neopixelWrite(48, RGB_BRIGHTNESS, 0, 0);
   } else {
     Serial.println("Sending error");
   }
 
   delay(2000);
+  neopixelWrite(48, 0, 0, 0);
 }

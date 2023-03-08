@@ -1,7 +1,7 @@
 #include <esp_now.h>
 #include <WiFi.h>
 
-// Define a data structure
+// 定义用于测试的数据
 typedef struct struct_message {
   char a[32];
   int b;
@@ -12,7 +12,7 @@ typedef struct struct_message {
 struct_message myData;
 
 
-// Callback function executed when data is received
+// 回调函数接收数据
 void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
   neopixelWrite(48, 0, RGB_BRIGHTNESS, 0);
   memcpy(&myData, incomingData, sizeof(myData));
@@ -34,18 +34,17 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
 void setup() {
   Serial.begin(115200);
 
-  // Set ESP32 as a Wi-Fi Station
   WiFi.mode(WIFI_STA);
   Serial.print("ESP32 Board MAC Address:  ");
   Serial.println(WiFi.macAddress());
 
-  // Initilize ESP-NOW
+  // 初始化 ESP-NOW
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW");
     return;
   }
 
-  // Register callback function
+  // 注册接收回调函数
   esp_now_register_recv_cb(OnDataRecv);
   
 }
