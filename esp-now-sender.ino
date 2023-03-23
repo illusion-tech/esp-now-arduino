@@ -1,86 +1,224 @@
+#include <Arduino.h>
 #include <esp_now.h>
+#include <esp_wifi.h>
 #include <WiFi.h>
+#include <EEPROM.h>
 
-int int_value;
-float float_value;
-bool bool_value = true;
+#define BOARD_ID 3
+#define MAX_CHANNEL 11
 
-/*接收端板子的Mac地址，这里为两块板子*/
-uint8_t broadcastAddress[] = { 0xF4, 0x12, 0xFA, 0x57, 0x38, 0xC4 };
-uint8_t broadcastAddress2[] = { 0xF4, 0x12, 0xFA, 0x56, 0x32, 0x08 };
+uint8_t serverAddress[] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 
-//用于测试的数据
+
 typedef struct struct_message {
-  char a[32];
-  int b;
-  float c;
-  bool d;
+  uint8_t msgType;
+  uint8_t id;
+  float temp;
+  float hum;
+  unsigned int readingId;
 } struct_message;
 
-struct_message myData;
+typedef struct struct_pairing {
+    uint8_t msgType;
+    uint8_t id;
+    uint8_t macAddr[6];
+    uint8_t channel;
+} struct_pairing;
 
-esp_now_peer_info_t peerInfo;
+struct_message myData;  // data to send
+struct_message inData;  // data received
+struct_pairing pairingData;
 
-// 回调函数接收数据
+enum PairingStatus {NOT_PAIRED, PAIR_REQUEST, PAIR_REQUESTED, PAIR_PAIRED,};
+PairingStatus pairingStatus = NOT_PAIRED;
+
+enum MessageType {PAIRING, DATA,};
+MessageType messageType;
+
+#ifdef SAVE_CHANNEL
+  int lastChannel;
+#endif  
+int channel = 1;
+ 
+float t = 0;
+float h = 0;
+
+unsigned long currentMillis = millis();
+unsigned long previousMillis = 0;
+const long interval = 10000;
+unsigned long start;
+unsigned int readingId = 0;   
+
+float readDHTTemperature() {
+  t = random(0,40);
+  return t;
+}
+
+float readDHTHumidity() {
+  h = random(0,100);
+  return h;
+}
+
+void addPeer(const uint8_t * mac_addr, uint8_t chan){
+  esp_now_peer_info_t peer;
+  ESP_ERROR_CHECK(esp_wifi_set_channel(chan ,WIFI_SECOND_CHAN_NONE));
+  esp_now_del_peer(mac_addr);
+  memset(&peer, 0, sizeof(esp_now_peer_info_t));
+  peer.channel = chan;
+  peer.encrypt = false;
+  memcpy(peer.peer_addr, mac_addr, sizeof(uint8_t[6]));
+  if (esp_now_add_peer(&peer) != ESP_OK){
+    Serial.println("Failed to add peer");
+    return;
+  }
+  memcpy(serverAddress, mac_addr, sizeof(uint8_t[6]));
+}
+
+void printMAC(const uint8_t * mac_addr){
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+           mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+  Serial.print(macStr);
+}
+
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   Serial.print("\r\nLast Packet Send Status:\t");
   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
 }
 
-void setup() {
-  Serial.begin(115200);
-  WiFi.mode(WIFI_STA);
-  // 打印 Mac 地址
-  Serial.print("ESP32 Board MAC Address:  ");
-  Serial.println(WiFi.macAddress());
-  // 初始化 ESP-NOW
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("Error initializing ESP-NOW");
-    return;
-  }
+void OnDataRecv(const uint8_t * mac_addr, const uint8_t *incomingData, int len) { 
+  Serial.print("Packet received from: ");
+  printMAC(mac_addr);
+  Serial.println();
+  Serial.print("data size = ");
+  Serial.println(sizeof(incomingData));
+  uint8_t type = incomingData[0];
+  switch (type) {
+  case DATA :
+    memcpy(&inData, incomingData, sizeof(inData));
+    Serial.print("ID  = ");
+    Serial.println(inData.id);
+    Serial.print("Setpoint temp = ");
+    Serial.println(inData.temp);
+    Serial.print("SetPoint humidity = ");
+    Serial.println(inData.hum);
+    Serial.print("reading Id  = ");
+    Serial.println(inData.readingId);
 
-  // 注册发送回调函数
-  esp_now_register_send_cb(OnDataSent);
+    if (inData.readingId % 2 == 1){
+      digitalWrite(LED_BUILTIN, LOW);
+    } else { 
+      digitalWrite(LED_BUILTIN, HIGH);
+    }
+    break;
 
-  // 注册通信频道
-
-  peerInfo.channel = 0;
-  peerInfo.encrypt = false;
-
-  // 配置接收板的Mac地址
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("Failed to add peer");
-    return;   
-  }
-  memcpy(peerInfo.peer_addr, broadcastAddress2, 6);
-  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("Failed to add peer");
-    return;
-  }
+  case PAIRING:
+    memcpy(&pairingData, incomingData, sizeof(pairingData));
+    if (pairingData.id == 0) {
+      printMAC(mac_addr);
+      Serial.print("Pairing done for ");
+      printMAC(pairingData.macAddr);
+      Serial.print(" on channel " );
+      Serial.print(pairingData.channel);
+      Serial.print(" in ");
+      Serial.print(millis()-start);
+      Serial.println("ms");
+      addPeer(pairingData.macAddr, pairingData.channel);
+      #ifdef SAVE_CHANNEL
+        lastChannel = pairingData.channel;
+        EEPROM.write(0, pairingData.channel);
+        EEPROM.commit();
+      #endif  
+      pairingStatus = PAIR_PAIRED;
+    }
+    break;
+  }  
 }
 
-void loop() {
-  // 创建测试数据
-  int_value = random(1, 20);
-  float_value = 1.3 * int_value;
-  bool_value = !bool_value;
-  strcpy(myData.a, "Welcome to the Workshop!");
-  myData.b = int_value;
-  myData.c = float_value;
-  myData.d = bool_value;
+PairingStatus autoPairing(){
+  switch(pairingStatus) {
+    case PAIR_REQUEST:
+    Serial.print("Pairing request on channel "  );
+    Serial.println(channel);
 
-  // 向指定 MAC 地址发送数据
-  esp_err_t result = esp_now_send(0, (uint8_t *)&myData, sizeof(myData));
-  //esp_err_t result2 = esp_now_send(broadcastAddress2, (uint8_t *)&myData, sizeof(myData));
+    // set WiFi channel   
+    ESP_ERROR_CHECK(esp_wifi_set_channel(channel,  WIFI_SECOND_CHAN_NONE));
+    if (esp_now_init() != ESP_OK) {
+      Serial.println("Error initializing ESP-NOW");
+    }
 
-  if (result == ESP_OK) {
-    Serial.println("Sending confirmed");
-    neopixelWrite(48, RGB_BRIGHTNESS, 0, 0);
-  } else {
-    Serial.println("Sending error");
+    // set callback routines
+    esp_now_register_send_cb(OnDataSent);
+    esp_now_register_recv_cb(OnDataRecv);
+  
+    // set pairing data to send to the server
+    pairingData.msgType = PAIRING;
+    pairingData.id = BOARD_ID;     
+    pairingData.channel = channel;
+
+    // add peer and send request
+    addPeer(serverAddress, channel);
+    esp_now_send(serverAddress, (uint8_t *) &pairingData, sizeof(pairingData));
+    previousMillis = millis();
+    pairingStatus = PAIR_REQUESTED;
+    break;
+
+    case PAIR_REQUESTED:
+    // time out to allow receiving response from server
+    currentMillis = millis();
+    if(currentMillis - previousMillis > 250) {
+      previousMillis = currentMillis;
+      // time out expired,  try next channel
+      channel ++;
+      if (channel > MAX_CHANNEL){
+         channel = 1;
+      }   
+      pairingStatus = PAIR_REQUEST;
+    }
+    break;
+
+    case PAIR_PAIRED:
+      // nothing to do here 
+    break;
   }
+  return pairingStatus;
+}  
 
-  delay(2000);
-  neopixelWrite(48, 0, 0, 0);
+void setup() {
+  Serial.begin(115200);
+  Serial.println();
+  pinMode(LED_BUILTIN, OUTPUT);
+  Serial.print("Client Board MAC Address:  ");
+  Serial.println(WiFi.macAddress());
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  start = millis();
+
+  #ifdef SAVE_CHANNEL 
+    EEPROM.begin(10);
+    lastChannel = EEPROM.read(0);
+    Serial.println(lastChannel);
+    if (lastChannel >= 1 && lastChannel <= MAX_CHANNEL) {
+      channel = lastChannel; 
+    }
+    Serial.println(channel);
+  #endif  
+  pairingStatus = PAIR_REQUEST;
+}  
+
+void loop() {
+  if (autoPairing() == PAIR_PAIRED) {
+    unsigned long currentMillis = millis();
+    if (currentMillis - previousMillis >= interval) {
+      // Save the last time a new reading was published
+      previousMillis = currentMillis;
+      //Set values to send
+      myData.msgType = DATA;
+      myData.id = BOARD_ID;
+      myData.temp = readDHTTemperature();
+      myData.hum = readDHTHumidity();
+      myData.readingId = readingId++;
+      esp_err_t result = esp_now_send(serverAddress, (uint8_t *) &myData, sizeof(myData));
+    }
+  }
 }
